@@ -8,6 +8,7 @@ let allowNegativeStock = false; // Por defecto NO se permite vender sin stock
 let currencyLabel = localStorage.getItem('pos_currency_label') || 'M.Local'; // Por defecto M.Local
 let exchangeRate = 36.50;
 let taxRate = 16; // Por defecto 16%
+let gastosFijos = parseFloat(localStorage.getItem('pos_gastos_fijos')) || 0;
 let categoriesData = []; // Array para gestionar categorías manualmente
 let taxMode = 'included'; // Opciones: 'included' (Por defecto) o 'added'
 let adminPassword = '1234';
@@ -2741,6 +2742,8 @@ function switchAdminTab(tab) {
   }
   else if (tab === 'dashboard') {
     renderAdvancedStats(); // ✅ Recarga gráfico y Top 10
+     renderCierresTabla();
+    cargarGastosFijosEnInput();
   }
   else if (tab === 'history') {
     renderHistoryCycles(); // ✅ Caso que faltaba en la segunda versión
@@ -3409,24 +3412,40 @@ function closeCloseDayModal() {
 function confirmCloseDay() {
   lastCloseTime = new Date();
   localStorage.setItem('pos_last_close', lastCloseTime.toISOString());
-  // --- NUEVO: Limpiar el fondo de caja para el próximo día ---
-  // Reiniciamos el balance de apertura a cero
   currentPeriod.openingBalance = {};
 
-  // --- GUARDAR EL CIERRE EN EL HISTORIAL ---
+  // ====== NUEVO: Cálculo económico completo del periodo ======
+  let periodoIngreso = 0;
+  let periodoCosto = 0;
+  periodSales.forEach(s => {
+    periodoIngreso += (s.total || 0);
+    periodoCosto += (s.totalCost || 0);
+  });
+  const periodoMargen = periodoIngreso - periodoCosto;
+  const periodoGastos = gastosFijos;
+  const periodoUtilidad = periodoMargen - periodoGastos;
+  // ===========================================================
+
   const closeRecord = {
     id: Date.now(),
     date: new Date().toISOString(),
-    total: periodTotal,
+    // Campos nuevos (economía completa)
+    ingreso: periodoIngreso,
+    costo: periodoCosto,
+    margen: periodoMargen,
+    gastos: periodoGastos,
+    utilidad: periodoUtilidad,
+    // Campos viejos (compatibilidad hacia atrás)
+    total: periodoIngreso,
     salesCount: periodSales.length
   };
   closedDays.push(closeRecord);
   safeSetStorage('pos_closed_days', closedDays);
   safeSetStorage('pos_current_period', currentPeriod);
-  // --------------------------------------------------------------
   closeCloseDayModal();
   renderSalesHistory();
   renderHistoryCycles();
+  renderCierresTabla(); // NUEVO: refresca la tabla del dashboard si está abierta
   showToast('Cierre de caja realizado');
 }
 
@@ -6653,7 +6672,175 @@ const PrinterUSB = {
       showToast("Error al imprimir: " + error.message, 'error');
     }
   }
-}; // <--- ESTA ES LA ÚNICA LLAVE QUE CIERRA TODO EL OBJETO
+};
+
+// ==========================================
+// NUEVO: GASTOS FIJOS — guardar y cargar en input
+// ==========================================
+function guardarGastosFijos() {
+  const input = document.getElementById('gastosFijosInput');
+  if (!input) return;
+  const val = parseFloat(input.value) || 0;
+  if (val < 0) {
+    showToast('El monto no puede ser negativo', 'error');
+    return;
+  }
+  gastosFijos = val;
+  localStorage.setItem('pos_gastos_fijos', gastosFijos.toString());
+  showToast('Gastos fijos guardados: ' + formatUSD(gastosFijos));
+}
+
+function cargarGastosFijosEnInput() {
+  const input = document.getElementById('gastosFijosInput');
+  if (input) input.value = gastosFijos.toFixed(2);
+}
+
+// ==========================================
+// NUEVO: TABLA DE CIERRES EN DASHBOARD (preview CSV)
+// ==========================================
+function renderCierresTabla() {
+  const tbody = document.getElementById('cierresTablaBody');
+  const tfoot = document.getElementById('cierresTablaFoot');
+  const vacio = document.getElementById('cierresVacio');
+  if (!tbody || !tfoot) return; // No estamos en dashboard
+
+  if (!closedDays || closedDays.length === 0) {
+    tbody.innerHTML = '';
+    tfoot.innerHTML = '';
+    if (vacio) vacio.classList.remove('hidden');
+    return;
+  }
+  if (vacio) vacio.classList.add('hidden');
+
+  // Mostrar del más reciente al más viejo (como un libro de reportes)
+  const sorted = [...closedDays].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  tbody.innerHTML = sorted.map((c, idx) => {
+    const fecha = new Date(c.date);
+    const fechaStr = fecha.toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const horaStr = fecha.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' });
+    const margenColor = (c.margen || 0) >= 0 ? 'text-[--accent]' : 'text-[--danger]';
+    const utilColor = (c.utilidad || 0) >= 0 ? 'text-[--accent]' : 'text-[--danger]';
+    return `
+      <tr class="hover:bg-[--bg-tertiary]/50">
+        <td class="px-3 py-3 font-mono text-xs text-[--fg-muted]">${idx + 1}</td>
+        <td class="px-3 py-3 font-mono text-xs">${fechaStr}<br><span class="text-[10px] text-[--fg-muted]">${horaStr}</span></td>
+        <td class="px-3 py-3 text-right font-mono">${formatUSD(c.ingreso || c.total || 0)}</td>
+        <td class="px-3 py-3 text-right font-mono text-[--fg-muted]">${formatUSD(c.costo || 0)}</td>
+        <td class="px-3 py-3 text-right font-mono ${margenColor}">${formatUSD(c.margen || 0)}</td>
+        <td class="px-3 py-3 text-right font-mono text-[--fg-muted]">${formatUSD(c.gastos || 0)}</td>
+        <td class="px-3 py-3 text-right font-mono ${utilColor} font-bold">${formatUSD(c.utilidad || 0)}</td>
+        <td class="px-3 py-3 text-center text-xs">${c.salesCount || 0}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Fila de totales
+  const T = sorted.reduce((acc, c) => ({
+    ingreso: acc.ingreso + (c.ingreso || c.total || 0),
+    costo:   acc.costo + (c.costo || 0),
+    margen:  acc.margen + (c.margen || 0),
+    gastos:  acc.gastos + (c.gastos || 0),
+    utilidad: acc.utilidad + (c.utilidad || 0),
+    ops:     acc.ops + (c.salesCount || 0)
+  }), { ingreso:0, costo:0, margen:0, gastos:0, utilidad:0, ops:0 });
+
+  const utilColorT = T.utilidad >= 0 ? 'text-[--accent]' : 'text-[--danger]';
+  tfoot.innerHTML = `
+    <tr>
+      <td class="px-3 py-3 font-mono text-xs">Σ</td>
+      <td class="px-3 py-3 font-bold">TOTALES</td>
+      <td class="px-3 py-3 text-right font-mono font-bold">${formatUSD(T.ingreso)}</td>
+      <td class="px-3 py-3 text-right font-mono font-bold">${formatUSD(T.costo)}</td>
+      <td class="px-3 py-3 text-right font-mono font-bold">${formatUSD(T.margen)}</td>
+      <td class="px-3 py-3 text-right font-mono font-bold">${formatUSD(T.gastos)}</td>
+      <td class="px-3 py-3 text-right font-mono ${utilColorT} font-bold">${formatUSD(T.utilidad)}</td>
+      <td class="px-3 py-3 text-center font-mono font-bold">${T.ops}</td>
+    </tr>
+  `;
+}
+
+// ==========================================
+// NUEVO: EXPORTAR CSV DE CIERRES (reporte mensual bancario)
+// ==========================================
+function exportarCierresCSV() {
+  if (!closedDays || closedDays.length === 0) {
+    showToast('No hay cierres para exportar', 'error');
+    return;
+  }
+
+  // Ordenar del más viejo al más reciente (orden lógico en un reporte mensual)
+  const sorted = [...closedDays].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const rows = [
+    ['N°', 'Fecha', 'Hora', 'Ingreso Total', 'Costo Productos', 'Margen Bruto', 'Gastos Fijos', 'Utilidad Final', 'Operaciones']
+  ];
+
+  sorted.forEach((c, idx) => {
+    const fecha = new Date(c.date);
+    rows.push([
+      idx + 1,
+      fecha.toLocaleDateString('es-VE'),
+      fecha.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' }),
+      (c.ingreso || c.total || 0).toFixed(2),
+      (c.costo || 0).toFixed(2),
+      (c.margen || 0).toFixed(2),
+      (c.gastos || 0).toFixed(2),
+      (c.utilidad || 0).toFixed(2),
+      c.salesCount || 0
+    ]);
+  });
+
+  // Fila de totales
+  const T = sorted.reduce((acc, c) => ({
+    ingreso: acc.ingreso + (c.ingreso || c.total || 0),
+    costo:   acc.costo + (c.costo || 0),
+    margen:  acc.margen + (c.margen || 0),
+    gastos:  acc.gastos + (c.gastos || 0),
+    utilidad: acc.utilidad + (c.utilidad || 0),
+    ops:     acc.ops + (c.salesCount || 0)
+  }), { ingreso:0, costo:0, margen:0, gastos:0, utilidad:0, ops:0 });
+
+  rows.push(['', 'TOTALES', '',
+    T.ingreso.toFixed(2), T.costo.toFixed(2), T.margen.toFixed(2),
+    T.gastos.toFixed(2), T.utilidad.toFixed(2), T.ops
+  ]);
+
+  // BOM + separador «;» para que Excel en español lo abra sin problemas
+  const csv = '\uFEFF' + rows.map(r => r.map(v => `"${v}"`).join(';')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const fechaDescarga = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `Reporte_Cierres_${fechaDescarga}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  showToast(`CSV descargado: ${sorted.length} cierres`);
+}
+
+// ==========================================
+// NUEVO: LIMPIAR SOLO LÍNEAS DE CIERRES (preserva ventas y config)
+// ==========================================
+function limpiarCierres() {
+  if (!closedDays || closedDays.length === 0) {
+    showToast('No hay cierres para limpiar', 'error');
+    return;
+  }
+  showConfirm(
+    `¿Limpiar historial de cierres?\n\nSe eliminarán ${closedDays.length} fila(s) del reporte.\nLas operaciones (ventas), productos y configuración se conservan.\n\nEsta acción no se puede deshacer.`,
+    () => {
+      closedDays = [];
+      safeSetStorage('pos_closed_days', closedDays);
+      renderCierresTabla();
+      renderHistoryCycles();
+      showToast('Historial de cierres limpiado');
+    }
+  );
+}
+
 // ==========================================
 // PDF: NOTA DE ENTREGA
 // ==========================================
