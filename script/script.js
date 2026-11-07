@@ -2613,9 +2613,6 @@ function confirmSale() {
   nextNoteNumber++;
   localStorage.setItem('pos_next_note_number', nextNoteNumber);
 
-    // ====== DESCARGAR PDF AUTOMÁTICAMENTE (síncrono para evitar pestaña nueva) ======
-  generateDeliveryNotePDF(sale.id);
-
   // ==========================================
   // IMPRESIÓN HÍBRIDA (ELECTRON O NAVEGADOR)
   // ==========================================
